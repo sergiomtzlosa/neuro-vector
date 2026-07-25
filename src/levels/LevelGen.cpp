@@ -92,9 +92,13 @@ LevelParams LevelGen::generate(int level, int loop) {
     for (int i = 0; i < (int)EnemyKind::COUNT; i++) total += w[i];
 
     // Full level script, deterministic.
+    // Pre-compute the per-wave decay multiplier iteratively instead of calling
+    // std::pow, whose implementation is not identical across MSVC/GCC/Clang.
     float t = 0;
+    float decay = 1.0f;                       // 0.93^0
     for (int wv = 0; wv < p.waves; wv++) {
-        float interval = p.spawnInterval * std::pow(0.93f, (float)wv); // later waves spawn faster
+        float interval = p.spawnInterval * decay;
+        decay *= 0.93f;                       // 0.93^(wv+1) for next iteration
         t = wv * p.waveGap;
         for (int i = 0; i < p.enemiesPerWave; i++) {
             int pick = rw.range(0, std::max(1, total) - 1);
@@ -114,22 +118,25 @@ LevelParams LevelGen::generate(int level, int loop) {
     }
 
     // Layout hash (determinism pin).
+    // Use lrintf (round-to-nearest) instead of (int) truncation so that
+    // sub-ULP floating-point differences across compilers don't flip the
+    // integer by ±1 and break the hash.
     uint64_t h = fnv1a(BASE_SEED, (uint64_t)level + 1);
     h = fnv1a(h, (uint64_t)p.lanes);
-    h = fnv1a(h, (uint64_t)(int)(p.spin * 8192));
+    h = fnv1a(h, (uint64_t)lrintf(p.spin * 8192));
     h = fnv1a(h, (uint64_t)p.waves);
     h = fnv1a(h, (uint64_t)p.enemiesPerWave);
-    h = fnv1a(h, (uint64_t)(int)(p.spawnInterval * 8192));
-    h = fnv1a(h, (uint64_t)(int)(p.speedMul * 8192));
+    h = fnv1a(h, (uint64_t)lrintf(p.spawnInterval * 8192));
+    h = fnv1a(h, (uint64_t)lrintf(p.speedMul * 8192));
     h = fnv1a(h, (uint64_t)p.warpMode);
-    h = fnv1a(h, (uint64_t)(int)(p.warpK * 512));
-    h = fnv1a(h, (uint64_t)(int)(p.warpP * 512));
-    h = fnv1a(h, (uint64_t)(int)(p.warpPh * 4096));
-    h = fnv1a(h, (uint64_t)(int)(p.hue * 8192));
-    h = fnv1a(h, (uint64_t)(int)(p.bpm * 64));
+    h = fnv1a(h, (uint64_t)lrintf(p.warpK * 512));
+    h = fnv1a(h, (uint64_t)lrintf(p.warpP * 512));
+    h = fnv1a(h, (uint64_t)lrintf(p.warpPh * 4096));
+    h = fnv1a(h, (uint64_t)lrintf(p.hue * 8192));
+    h = fnv1a(h, (uint64_t)lrintf(p.bpm * 64));
     h = fnv1a(h, (uint64_t)p.spawns.size());
     for (const Spawn& s : p.spawns) {
-        h = fnv1a(h, (uint64_t)(int)(s.t * 1000));
+        h = fnv1a(h, (uint64_t)lrintf(s.t * 1000));
         h = fnv1a(h, (uint64_t)((int)s.kind * 64 + s.lane * 4 + s.track));
     }
     p.hash = h;
