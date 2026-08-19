@@ -74,6 +74,21 @@ LevelParams LevelGen::generate(int level, int loop) {
     p.hue = rp.f01();
     p.hueSpread = 0.08f + 0.10f * rp.f01();
     p.bpm = std::min(150.f, 112.f + level * 0.4f);
+
+    // Snap every float that enters the hash to its hash-grid resolution.
+    // This makes the hash a pure function of integers regardless of
+    // platform-specific intermediate FP rounding (MSVC FMA, x87, etc.).
+    auto snap = [](float v, float scale) -> float {
+        return (float)lrintf(v * scale) / scale;
+    };
+    p.spin          = snap(p.spin,          8192);
+    p.spawnInterval = snap(p.spawnInterval, 8192);
+    p.speedMul      = snap(p.speedMul,      8192);
+    p.warpK         = snap(p.warpK,          512);
+    p.warpP         = snap(p.warpP,          512);
+    p.warpPh        = snap(p.warpPh,        4096);
+    p.hue           = snap(p.hue,           8192);
+    p.bpm           = snap(p.bpm,             64);
     p.superStart = 1;
 
     if (p.tier == 0) p.geoName = polygonName(p.lanes);
