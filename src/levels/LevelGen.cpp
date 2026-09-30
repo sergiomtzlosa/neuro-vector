@@ -89,6 +89,10 @@ LevelParams LevelGen::generate(int level, int loop) {
     p.warpPh        = snap(p.warpPh,        4096);
     p.hue           = snap(p.hue,           8192);
     p.bpm           = snap(p.bpm,             64);
+
+    // Recompute waveGap from the snapped spawnInterval so the spawn
+    // timeline is fully consistent with the hash grid.
+    p.waveGap = p.enemiesPerWave * p.spawnInterval * 0.55f;
     p.superStart = 1;
 
     if (p.tier == 0) p.geoName = polygonName(p.lanes);
@@ -109,12 +113,14 @@ LevelParams LevelGen::generate(int level, int loop) {
     // Full level script, deterministic.
     // Pre-compute the per-wave decay multiplier iteratively instead of calling
     // std::pow, whose implementation is not identical across MSVC/GCC/Clang.
-    float t = 0;
+    // Use double for the time accumulator so that repeated float additions
+    // don't drift differently across platforms.
+    double t = 0;
     float decay = 1.0f;                       // 0.93^0
     for (int wv = 0; wv < p.waves; wv++) {
-        float interval = p.spawnInterval * decay;
+        double interval = (double)p.spawnInterval * (double)decay;
         decay *= 0.93f;                       // 0.93^(wv+1) for next iteration
-        t = wv * p.waveGap;
+        t = (double)wv * (double)p.waveGap;
         for (int i = 0; i < p.enemiesPerWave; i++) {
             int pick = rw.range(0, std::max(1, total) - 1);
             EnemyKind kind = EnemyKind::SEEKER;
@@ -123,7 +129,7 @@ LevelParams LevelGen::generate(int level, int loop) {
                 pick -= w[k];
             }
             Spawn s;
-            s.t = t;
+            s.t = (float)t;
             s.kind = kind;
             s.lane = rw.range(0, p.lanes - 1);
             s.track = (p.nested && rw.chance(0.45f)) ? 1 : 0;
