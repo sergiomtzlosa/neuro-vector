@@ -3,9 +3,18 @@ name: ci
 on:
   push:
     branches: [main, master]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ github.ref_name }}
 
 jobs:
+  # ---- test: build + headless self-test on every push/PR/tag ------------------
   build:
     strategy:
       fail-fast: false
@@ -21,5 +30,120 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # MSVC is a multi-config generator: the exe lands in build/Release/,
+      # and SDL2.dll must sit next to it before it can start.
       - name: Self-test (determinism + strobe safety)
-        run: ./build/neuro-vector --selftest
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Copy SDL2.dll next to the exe so it can find it at runtime
+            sdl=$(find build -name SDL2.dll -print -quit 2>/dev/null)
+            [ -n "$sdl" ] && cp "$sdl" build/Release/
+            ./build/Release/neuro-vector.exe --selftest
+          else
+            ./build/neuro-vector --selftest
+          fi
+
+  # ---- package: self-contained binary archives on a tag (v*) or manual run ----
+  package:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: linux-x64 }
+          - { os: macos-latest,   name: macos-arm64 }
+          - { os: windows-latest, name: windows-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # Linux: bundle libSDL2 next to the binary, point RPATH at $ORIGIN.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf zip
+          PKG="neuro-vector-${VERSION}-linux-x64"
+          mkdir -p "$PKG"
+          cp build/neuro-vector "$PKG/"
+          cp build/_deps/sdl2-build/libSDL2-2.0.so.0 "$PKG/"
+          patchelf --set-rpath '$ORIGIN' "$PKG/neuro-vector"
+          zip -r "$PKG.zip" "$PKG"
+          sha256sum "$PKG.zip" > SHA256SUMS-linux-x64
+
+      # macOS: bundle the dylib, repoint RPATH at the binary's folder, re-sign.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          PKG="neuro-vector-${VERSION}-macos-arm64"
+          mkdir -p "$PKG"
+          cp build/neuro-vector "$PKG/"
+          cp build/_deps/sdl2-build/libSDL2-2.0.0.dylib "$PKG/"
+          install_name_tool -delete_rpath "$PWD/build/_deps/sdl2-build" "$PKG/neuro-vector" || true
+          install_name_tool -add_rpath @executable_path "$PKG/neuro-vector"
+          codesign -f -s - "$PKG/neuro-vector"
+          zip -r "$PKG.zip" "$PKG"
+          shasum -a 256 "$PKG.zip" > SHA256SUMS-macos-arm64
+
+      # Windows: bundle SDL2.dll next to the exe (default DLL search path).
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pkg = "neuro-vector-$env:VERSION-windows-x64"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item build\Release\neuro-vector.exe $pkg\
+          $dll = Get-ChildItem -Path build -Recurse -Filter SDL2.dll |
+            Where-Object { $_.FullName -match 'Release' } | Select-Object -First 1
+          if (-not $dll) { throw "SDL2.dll not found in build tree" }
+          Copy-Item $dll.FullName $pkg\
+          Compress-Archive -Path $pkg -DestinationPath "$pkg.zip"
+          $hash = (Get-FileHash "$pkg.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $pkg.zip" | Out-File -Encoding ascii SHA256SUMS-windows-x64
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: |
+            *.zip
+            SHA256SUMS-*
+          if-no-files-found: error
+
+  # ---- release: gather binaries + source bundles, publish a GitHub release ----
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Source archives (zip + tar.gz)
+        run: |
+          git archive --format=zip    -o "neuro-vector-${VERSION}-source.zip"    HEAD
+          git archive --format=tar.gz -o "neuro-vector-${VERSION}-source.tar.gz" HEAD
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${VERSION}" \
+            --title "neuro-vector ${VERSION}" \
+            --generate-notes \
+            dist/* neuro-vector-*-source.zip neuro-vector-*-source.tar.gz

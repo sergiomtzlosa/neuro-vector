@@ -66,7 +66,7 @@ int selftest(bool dumpGolden) {
         FILE* f = fopen(path, "r");
         if (f) {
             char buf[128];
-            int checked = 0;
+            int checked = 0, matched = 0;
             for (int i = 0; i < 100 && fgets(buf, sizeof buf, f); i++) {
                 buf[strcspn(buf, "\r\n")] = 0;
                 if (!buf[0]) continue;
@@ -75,10 +75,12 @@ int selftest(bool dumpGolden) {
                     printf("FAIL golden: level %d hash drift:\n  got: %s\n  want: %s\n",
                            i + 1, lines[i].c_str(), buf);
                     fails++;
+                } else {
+                    matched++;
                 }
             }
             fclose(f);
-            printf("golden: %d/%d level hashes match\n", checked, checked);
+            printf("golden: %d/%d level hashes match\n", matched, checked);
         } else {
             printf("golden: no golden file (run --selftest --dump-golden once)\n");
         }
